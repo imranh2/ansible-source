@@ -52,7 +52,7 @@ def add_git_host_key(module, url, accept_hostkey=True, create_dir=True):
         fqdn, port = get_fqdn_and_port(url)
 
         if fqdn:
-            known_host = check_hostkey(module, fqdn)
+            known_host = check_hostkey(module, fqdn, port)
             if not known_host:
                 if accept_hostkey:
                     rc, out, err = add_host_key(module, fqdn, port=port, create_dir=create_dir)
@@ -110,14 +110,18 @@ def get_fqdn_and_port(repo_url):
     return fqdn, port
 
 
-def check_hostkey(module, fqdn):
-    return not not_in_host_file(module, fqdn)
+def check_hostkey(module, fqdn, port):
+    return not not_in_host_file(module, fqdn, port)
 
 
 # this is a variant of code found in connection_plugins/paramiko.py and we should modify
 # the paramiko code to import and use this.
 
-def not_in_host_file(self, host):
+def not_in_host_file(self, host, port):
+
+    """ use ssh-keygen to add the hostkey """
+
+    keygen_cmd = self.get_bin_path('ssh-keygen', True)
 
     if 'USER' in os.environ:
         user_host_file = os.path.expandvars("~${USER}/.ssh/known_hosts")
@@ -143,31 +147,28 @@ def not_in_host_file(self, host):
             hfiles_not_found += 1
             continue
         else:
-            data = host_fh.read()
-            host_fh.close()
-
-        for line in data.split("\n"):
-            if line is None or " " not in line:
-                continue
-            tokens = line.split()
-            if tokens[0].find(HASHED_KEY_MAGIC) == 0:
-                # this is a hashed known host entry
-                try:
-                    (kn_salt,kn_host) = tokens[0][len(HASHED_KEY_MAGIC):].split("|",2)
-                    hash = hmac.new(kn_salt.decode('base64'), digestmod=sha1)
-                    hash.update(host)
-                    if hash.digest() == kn_host.decode('base64'):
-                        return False
-                except:
-                    # invalid hashed host key, skip it
-                    continue
-            else:
-                # standard host file entry
-                if host in tokens[0]:
+            #if port is "None", "", or "22" then not append it to the end of host
+            if port is "None" or port is "" or port is "22":
+                run_cmd = "%s -F %s -f %s" % (keygen_cmd, host, host_fh)
+                rc, out, err = self.run_command(run_cmd)
+                # openssh >=6.4 has changed ssh-keygen behaviour such that it returns
+                # 1 if no host is found, whereas previously it returned 0
+                if out == '' and err == '' and (rc == 0 or rc == 1):
                     return False
+                else:
+                   continue
+            else: #we have a non-standard port
+                ssh_fqdn = "[" + host + "]" + ":" + str(port)
+                run_cmd = "%s -F %s -f %s" % (keygen_cmd, ssh_fqdn, host_fh)
+                rc, out, err = self.run_command(run_cmd)
+                # openssh >=6.4 has changed ssh-keygen behaviour such that it returns
+                # 1 if no host is found, whereas previously it returned 0
+                if out == '' and err == '' and (rc == 0 or rc == 1):
+                    return False
+                else:
+                   continue
 
-    return True
-
+        return True
 
 def add_host_key(module, fqdn, port=22, key_type="rsa", create_dir=False):
 
